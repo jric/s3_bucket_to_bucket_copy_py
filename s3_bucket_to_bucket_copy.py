@@ -14,6 +14,10 @@ tail -f log-s3.log
 tail -f log-s3.log | grep Fetch  # show only fetches
 grep Fetch log-s3.log
 
+Options:
+    --ignore-etag  By default content which already exists at the destination
+      and has the same etag will not be overwritten; this changes that
+
 """
 from boto.s3.connection import S3Connection
 from boto.s3.key import Key
@@ -40,7 +44,8 @@ logging.basicConfig(level=logging.WARN)
 
 class Worker(threading.Thread):
     def __init__(self, queue, thread_id, aws_key, aws_secret_key,
-                 src_bucket_name, dst_bucket_name, src_path, dst_path):
+                 src_bucket_name, dst_bucket_name, src_path, dst_path,
+                 ignore_etag):
         threading.Thread.__init__(self)
         self.queue = queue
         self.done_count = 0
@@ -51,6 +56,7 @@ class Worker(threading.Thread):
         self.dst_bucket_name = dst_bucket_name
         self.src_path = src_path
         self.dst_path = dst_path
+        self.ignore_etag = ignore_etag
 
     def __init_s3(self):
         print '  t%s: conn to s3' % self.thread_id
@@ -66,7 +72,7 @@ class Worker(threading.Thread):
                 key_name = self.queue.get()
                 k = Key(self.srcBucket, key_name)
                 dist_key = Key(self.dstBucket, k.key)
-                if not dist_key.exists() or k.etag != dist_key.etag:
+                if self.ignore_etag or not dist_key.exists() or k.etag != dist_key.etag:
                     print '  t%s: Copy: %s' % (self.thread_id, k.key)
                     acl = self.srcBucket.get_acl(k)
                     self.dstBucket.copy_key(k.key, self.src_bucket_name, k.key, storage_class=k.storage_class)
@@ -79,7 +85,7 @@ class Worker(threading.Thread):
             self.queue.task_done()
 
 
-def copy_bucket(aws_key, aws_secret_key, src, dst):
+def copy_bucket(aws_key, aws_secret_key, src, dst, ignore_etag=False):
     max_keys = 1000
 
     conn = S3Connection(aws_key, aws_secret_key)
@@ -108,7 +114,7 @@ def copy_bucket(aws_key, aws_secret_key, src, dst):
         print 'Adding worker thread %s for queue processing' % i
         t = Worker(q, i, aws_key, aws_secret_key,
                    src_bucket_name, dst_bucket_name,
-                   src_path, dst_path)
+                   src_path, dst_path, ignore_etag)
         t.daemon = True
         t.start()
 
@@ -145,5 +151,14 @@ def copy_bucket(aws_key, aws_secret_key, src, dst):
 
 
 if __name__ == "__main__":
+    ignore_etag = False
+    if '--ignore-etag' in sys.argv:
+        ignore_etag = True
+        sys.argv = [item for item in sys.argv if item != '--ignore-etag']
+    if len(sys.argv) > 3:
+        print sys.stderr, "Unexpected argument in command: " + sys.argv[1:]
+        print sys.stderr, "Usage:"
+        print sys.stderr, __doc__
+        exit(1)
     (src, dest) = sys.argv[1:3]
-    copy_bucket(default_aws_key, default_aws_secret_key, src, dest)
+    copy_bucket(default_aws_key, default_aws_secret_key, src, dest, ignore_etag)
